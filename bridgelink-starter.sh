@@ -3,10 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JAR="$SCRIPT_DIR/target/bridge-link-launcher-1.3.0.jar"
 
-if [[ ! -f "$JAR" ]]; then
-    echo "Error: $JAR not found." >&2
+# Version-agnostic lookup of the shaded jar (newest build wins)
+JAR="$(ls -1t "$SCRIPT_DIR"/target/bridge-link-launcher-*.jar 2>/dev/null | head -1 || true)"
+
+if [[ -z "$JAR" || ! -f "$JAR" ]]; then
+    echo "Error: no bridge-link-launcher jar found in $SCRIPT_DIR/target." >&2
     echo "Build it first with: mvn package (in $SCRIPT_DIR)" >&2
     exit 1
 fi
