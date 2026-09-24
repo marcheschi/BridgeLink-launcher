@@ -1,5 +1,6 @@
 package com.innovarhealthcare.launcher;
 
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
@@ -7,8 +8,18 @@ import javax.net.ssl.X509TrustManager;
 import java.security.cert.X509Certificate;
 
 public class SSLBypass {
+    private static SSLContext defaultContext;
+    private static HostnameVerifier defaultHostnameVerifier;
+
     public static void disableSSLVerification() {
         try {
+            // Remember the JVM defaults so they can be restored later (the bypass
+            // is now applied per connection instead of globally at startup).
+            if (defaultContext == null) {
+                defaultContext = SSLContext.getDefault();
+                defaultHostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier();
+            }
+
             TrustManager[] trustAllCerts = new TrustManager[]{
                     new X509TrustManager() {
                         public void checkClientTrusted(X509Certificate[] certs, String authType) {
@@ -33,6 +44,20 @@ public class SSLBypass {
             System.out.println("SSL verification disabled. Trusting all certificates.");
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    /**
+     * Restores the JVM default SSL socket factory and hostname verifier captured
+     * before {@link #disableSSLVerification()} was first called. Safe to call even
+     * if the bypass was never enabled.
+     */
+    public static void restoreDefaults() {
+        if (defaultContext != null) {
+            HttpsURLConnection.setDefaultSSLSocketFactory(defaultContext.getSocketFactory());
+        }
+        if (defaultHostnameVerifier != null) {
+            HttpsURLConnection.setDefaultHostnameVerifier(defaultHostnameVerifier);
         }
     }
 }
