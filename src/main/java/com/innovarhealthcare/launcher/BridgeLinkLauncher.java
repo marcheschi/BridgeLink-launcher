@@ -35,6 +35,7 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.TextInputDialog;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.TextArea;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.cell.TextFieldTreeCell;
 import javafx.scene.layout.VBox;
 import javafx.scene.layout.HBox;
@@ -62,10 +63,31 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.UUID;
+import java.util.Optional;
 
 public class BridgeLinkLauncher extends Application implements Progress {
     private static final boolean DEVELOP = false;
-    private static final String VERSION = DEVELOP ? "Development 1.2.0" : "1.2.0";
+    // Keep in sync with the <version> in pom.xml; when running from a packaged
+    // jar the manifest value wins (see resolveVersion()).
+    private static final String FALLBACK_VERSION = "1.3.0";
+    private static final String VERSION = DEVELOP ? "Development " + FALLBACK_VERSION : resolveVersion();
+
+    /**
+     * Reads the implementation version from the jar manifest when available so
+     * the title never drifts from the build version; falls back to the constant.
+     */
+    private static String resolveVersion() {
+        try {
+            String v = BridgeLinkLauncher.class.getPackage().getImplementationVersion();
+            if (v != null && !v.trim().isEmpty()) {
+                return v;
+            }
+        } catch (Exception ignored) {
+            // fall through to constant
+        }
+        return FALLBACK_VERSION;
+    }
+
     private static final String LOG_FILE = "BridgeLinkLauncher-debug.log";
     private static final boolean DEBUG = false;
     private Image LAUNCHER_ICON;
@@ -85,6 +107,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
     private ComboBox<BundledJava> bundledJavaCombo;
     private ComboBox<HeapMemory> heapSizeCombo;
     private TextField jvmOptionsTextField;
+    private TextArea notesTextArea;
     private RadioButton bundledJavaRadio;
     private RadioButton customJavaRadio;
     private TextField customJavaTextField;
@@ -96,24 +119,50 @@ public class BridgeLinkLauncher extends Application implements Progress {
     private ProgressIndicator progressIndicator;
     private Button cancelButton;
     private CheckBox closeWindowCheckBox;
+    private TextField sshTunnelTextField;
+    private Button sshTunnelTestButton;
+    private volatile Process tunnelProcess; // running ssh -N process, if any
     private Button newButton;
     private Button saveButton;
     private Button duplicateButton;
     private Button deleteButton;
     private Button importButton;
     private Button exportButton;
+    private Button revertButton;
+    private CheckBox trustSelfSignedCheckBox;
     private Thread launchThread;
     private volatile DownloadJNLP currentDownload;
     private volatile boolean isLaunching = false;
     private Stage primaryStage;
+    private final String[] startupArgs; // raw application arguments (data dir override)
     private String appDir;     // Application directory
     private File dataFolder;   // "data" folder within appDir
     private File cacheFolder;  // New "cache" folder within appDir
     private String tempSelectedIcon;  // Temporarily selected icon (before save)
+    private ConnectionStore connectionStore; // Persistence layer (load/save/import/export)
+    // Snapshot of the selected connection's form values, used to detect unsaved
+    // changes and to implement Discard/Revert.
+    private Map<String, Object> loadedSnapshot;
+
+    /** No-arg constructor required by the JavaFX launcher (see {@link #main}). */
+    public BridgeLinkLauncher() {
+        this(null);
+    }
+
+    /**
+     * @param args raw application arguments; when present, the first one overrides
+     *             the application directory (same behaviour as before). Needed as
+     *             an explicit field because {@code getParameters()} is not usable
+     *             from the static shutdown hook registered in {@link #main}.
+     */
+    public BridgeLinkLauncher(String[] args) {
+        this.startupArgs = args != null ? args : new String[0];
+    }
 
     @Override
     public void start(Stage stage) {
         primaryStage = stage;
+        getAppHolder()[0] = this; // allow the shutdown hook to clean up the SSH tunnel
         LAUNCHER_ICON = new Image("/images/logo.png");
         BRIDGELINK_ICON = new Image("/images/BridgeLink.png");
         stage.setTitle("BridgeLink Administrator Launcher (" + VERSION + ")");
@@ -125,6 +174,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
         }
 
         initializeDirectories();
+        connectionStore = new ConnectionStore(dataFolder, new File(appDir));
 
         VBox root = new VBox(15);
         root.setPadding(new Insets(15));
@@ -143,17 +193,30 @@ public class BridgeLinkLauncher extends Application implements Progress {
         filterField.setMinWidth(200);
         filterField.setMaxWidth(200);
         filterField.textProperty().addListener((obs, oldVal, newVal) -> updateTreeViewWithFilter(newVal));
+        // Ctrl+F (or Cmd+F on macOS) moves the focus to the filter field
+        final TextField shortcutFilterField = filterField;
+        shortcutFilterField.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+            if ((event.isControlDown() || event.isMetaDown()) && event.getCode() == javafx.scene.input.KeyCode.F) {
+                shortcutFilterField.requestFocus();
+                shortcutFilterField.positionCaret(shortcutFilterField.getText().length());
+                event.consume();
+            }
+        });
 
         newButton = new Button("New");
         newButton.setOnAction(e -> createNewConnection());
         saveButton = new Button("Save");
         saveButton.setOnAction(e -> saveCurrentConnection());
+        revertButton = new Button("Revert");
+        revertButton.setDisable(true);
+        revertButton.setTooltip(new Tooltip("Discard unsaved changes and restore the saved values"));
+        revertButton.setOnAction(e -> revertChanges());
         duplicateButton = new Button("Duplicate");
         duplicateButton.setOnAction(e -> duplicateConnection());
         deleteButton = new Button("Delete");
         deleteButton.setDisable(true);
         deleteButton.setOnAction(e -> deleteCurrentConnection());
-        tableButtons.getChildren().addAll(filterField, newButton, saveButton, duplicateButton, deleteButton);
+        tableButtons.getChildren().addAll(filterField, newButton, saveButton, revertButton, duplicateButton, deleteButton);
         tableButtons.setAlignment(Pos.CENTER_LEFT);
 
         // TreeView setup
@@ -222,14 +285,34 @@ public class BridgeLinkLauncher extends Application implements Progress {
                     } else {
                         setGraphic(null);
                     }
+
+                    // Show the connection notes (and address) as a tooltip on hover
+                    if (item != null && !empty && item.getAddress() != null) {
+                        StringBuilder tip = new StringBuilder();
+                        if (StringUtils.isNotBlank(item.getName())) {
+                            tip.append(item.getName()).append('\n');
+                        }
+                        tip.append(item.getAddress());
+                        if (StringUtils.isNotBlank(item.getNotes())) {
+                            tip.append("\n\nNotes:\n").append(item.getNotes());
+                        }
+                        setTooltip(new Tooltip(tip.toString()));
+                    } else {
+                        setTooltip(null);
+                    }
                 }
             };
 
             cell.setOnMouseClicked(event -> {
                 if (event.getClickCount() == 2 && !cell.isEmpty()) {
                     Connection conn = cell.getItem();
-                    if (conn != null && conn.getAddress() != null) { // Only edit connections, not groups
-                        cell.startEdit();
+                    if (conn != null && conn.getAddress() != null) { // Only act on connections, not groups
+                        if (isLaunching) {
+                            return;
+                        }
+                        // Double-click launches the connection directly; use F2 to rename.
+                        treeSelectionModel.select(cell.getTreeItem());
+                        launch();
                     }
                 }
             });
@@ -277,6 +360,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
 
             if (isConnection) {
                 updateUIFromConnection(selectedConn);
+                takeFormSnapshot();
             } else {
                 groupTextField.setText("");
                 addressTextField.setText("");
@@ -286,14 +370,19 @@ public class BridgeLinkLauncher extends Application implements Progress {
                 bundledJavaCombo.getSelectionModel().select(0);
                 heapSizeCombo.getSelectionModel().select(1);
                 jvmOptionsTextField.setText("");
+                notesTextArea.setText("");
+                sshTunnelTextField.setText("");
                 clearCacheCheckBox.setSelected(false);
+                trustSelfSignedCheckBox.setSelected(false);
                 // Reset radio buttons to bundled and update control states
                 bundledJavaRadio.setSelected(true);
                 customJavaTextField.setText("");
                 updateJavaControlStates();
+                loadedSnapshot = null;
             }
 
             saveButton.setDisable(true);
+            revertButton.setDisable(true);
             duplicateButton.setDisable(!isConnection);
             deleteButton.setDisable(!isConnection);
             launchButton.setDisable(!isConnection);
@@ -302,7 +391,11 @@ public class BridgeLinkLauncher extends Application implements Progress {
             usernameTextField.setDisable(!isConnection);
             passwordField.setDisable(!isConnection);
             jvmOptionsTextField.setDisable(!isConnection);
+            notesTextArea.setDisable(!isConnection);
+            sshTunnelTextField.setDisable(!isConnection);
+            sshTunnelTestButton.setDisable(!isConnection);
             showConsoleCheckBox.setDisable(!isConnection);
+            trustSelfSignedCheckBox.setDisable(!isConnection);
 
             // Don't directly control bundledJavaCombo and customJavaTextField here
             // Let updateJavaControlStates() handle them based on radio button selection
@@ -354,6 +447,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
         HBox addressRow = new HBox(10);
         Label addressLabel = new Label("Address:");
         addressTextField = new TextField("https://localhost:8443");
+        addressTextField.setPromptText("https://server:port");
         addressTextField.textProperty().addListener((obs, oldVal, newVal) -> updateSaveButtonState());
         addressRow.getChildren().addAll(addressLabel, addressTextField);
         HBox.setHgrow(addressTextField, Priority.ALWAYS);
@@ -432,6 +526,19 @@ public class BridgeLinkLauncher extends Application implements Progress {
         jvmOptionsRow.getChildren().addAll(jvmOptionsLabel, jvmOptionsTextField);
         HBox.setHgrow(jvmOptionsTextField, Priority.ALWAYS);
 
+        // Notes row
+        HBox notesRow = new HBox(10);
+        Label notesLabel = new Label("Notes:");
+        notesTextArea = new TextArea("");
+        notesTextArea.setPromptText("Enter notes about this connection...");
+        notesTextArea.setPrefRowCount(3);
+        notesTextArea.setWrapText(true);
+        notesTextArea.setMaxHeight(80);
+        notesTextArea.textProperty().addListener((obs, oldVal, newVal) -> updateSaveButtonState());
+        notesRow.getChildren().addAll(notesLabel, notesTextArea);
+        notesRow.setAlignment(Pos.TOP_LEFT);
+        HBox.setHgrow(notesTextArea, Priority.ALWAYS);
+
         HBox consoleRow = new HBox(10);
         Label consoleLabel = new Label("Show Java Console:");
         showConsoleCheckBox = new CheckBox();
@@ -441,7 +548,40 @@ public class BridgeLinkLauncher extends Application implements Progress {
         clearCacheCheckBox = new CheckBox();
         clearCacheCheckBox.setSelected(false);
         clearCacheCheckBox.setOnAction(e -> updateSaveButtonState());
+        trustSelfSignedCheckBox = new CheckBox("Trust self-signed certificate (insecure)");
+        trustSelfSignedCheckBox.setSelected(false);
+        trustSelfSignedCheckBox.setTooltip(new Tooltip(
+                "Disables SSL certificate and hostname verification for this connection.\n" +
+                "Only enable it for servers using self-signed certificates; it makes the\n" +
+                "connection vulnerable to man-in-the-middle attacks."));
+        trustSelfSignedCheckBox.setOnAction(e -> updateSaveButtonState());
         consoleRow.getChildren().addAll(consoleLabel, showConsoleCheckBox, clearCacheLabel, clearCacheCheckBox);
+
+        // Security options row
+        HBox securityRow = new HBox(10);
+        securityRow.getChildren().addAll(trustSelfSignedCheckBox);
+        securityRow.setAlignment(Pos.CENTER_LEFT);
+
+        // SSH tunnel row: optional "ssh -L ..." command to jump through a tunnel
+        HBox sshTunnelRow = new HBox(10);
+        Label sshTunnelLabel = new Label("SSH Tunnel:");
+        sshTunnelTextField = new TextField();
+        sshTunnelTextField.setPromptText("e.g. ssh -L 8443:mirth.prova.it:8443 root@node01.picopalla.it (leave empty for direct connection)");
+        sshTunnelTextField.textProperty().addListener((obs, oldVal, newVal) -> updateSaveButtonState());
+        sshTunnelTextField.setTooltip(new Tooltip(
+                "Optional SSH local-port-forwarding command used to reach the server\n" +
+                "through a tunnel (jump). Example:\n" +
+                "  ssh -L 8443:mirth.prova.it:8443 root@node01.picopalla.it\n" +
+                "Supported options: -L (required), -p <port>, -i <keyfile>, -N, -f.\n" +
+                "At Launch an \"ssh -N\" process is started in the background and the\n" +
+                "address is rewritten to http://localhost:<localport>; the tunnel is\n" +
+                "closed automatically when BridgeLink exits.\n" +
+                "Use Test to verify the command syntax and that the tunnel opens."));
+        sshTunnelTestButton = new Button("Test");
+        sshTunnelTestButton.setTooltip(new Tooltip("Opens the tunnel, verifies the port is listening, then closes it"));
+        sshTunnelTestButton.setOnAction(e -> testSshTunnel());
+        sshTunnelRow.getChildren().addAll(sshTunnelLabel, sshTunnelTextField, sshTunnelTestButton);
+        HBox.setHgrow(sshTunnelTextField, Priority.ALWAYS);
 
         // Icon selection row
         HBox iconRow = new HBox(10);
@@ -473,7 +613,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
         iconRow.getChildren().addAll(iconSelectionLabel, iconButton);
         iconRow.setAlignment(Pos.CENTER_LEFT);
 
-        configBox.getChildren().addAll(groupRow, addressRow, credentialsRow, javaHomeRow, heapSizeRow, jvmOptionsRow, consoleRow, iconRow);
+        configBox.getChildren().addAll(groupRow, addressRow, credentialsRow, javaHomeRow, heapSizeRow, jvmOptionsRow, notesRow, consoleRow, securityRow, sshTunnelRow, iconRow);
 
         // Progress Section (unchanged)
         Separator separator = new Separator();
@@ -513,7 +653,14 @@ public class BridgeLinkLauncher extends Application implements Progress {
 
         Scene scene = new Scene(root, 800, 600);
         stage.setScene(scene);
+        stage.setOnCloseRequest(this::handleWindowCloseRequest);
         stage.show();
+
+        // Capture the initial snapshot so the dirty-tracking (Save/Revert) works
+        // from the very first selection made above.
+        takeFormSnapshot();
+        saveButton.setDisable(true);
+        revertButton.setDisable(true);
 
         newButton.requestFocus();
 
@@ -532,8 +679,8 @@ public class BridgeLinkLauncher extends Application implements Progress {
             System.err.println("Failed to determine application directory: " + e.getMessage());
         }
 
-        if (!getParameters().getRaw().isEmpty()) {
-            appDir = getParameters().getRaw().get(0); // Override with first parameter if provided
+        if (startupArgs.length > 0 && StringUtils.isNotBlank(startupArgs[0])) {
+            appDir = startupArgs[0]; // Override with first parameter if provided
         }
 
         // Set up data and cache folders
@@ -636,7 +783,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
                 TreeItem<Connection> groupItem = groupItems.computeIfAbsent(groupName,
                         k -> {
                             Connection groupConn = new Connection(null, "", null, null, null, null, null,
-                                    null, false, false, null, false, null, false, null, null, groupName, null, false, false, null, false);
+                                    null, false, false, null, false, null, false, null, null, groupName, null, false, false, null, false, null);
                             TreeItem<Connection> item = new TreeItem<>(groupConn);
                             item.setExpanded(true);
                             return item;
@@ -690,7 +837,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
             while (nameExists(finalName)) {
                 finalName = name + " Copy " + cnt++;
             }
-            addConnection(finalName, "", "BUNDLED", "Java 17", "", "512m", "", false, "", false, "", false, "", "", "", "", false, "", false);
+            addConnection(finalName, "", "BUNDLED", "Java 17", "", "512m", "", false, "", false, "", false, "", "", "", "", false, "", false, "");
         }
     }
 
@@ -715,6 +862,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
                 connectionsTreeView.refresh();
                 saveButton.setDisable(true);
                 saveConnections();
+                takeFormSnapshot(); // changes are persisted: reset the dirty state
 
                 TreeItem<Connection> newSelectedItem = findTreeItem(currentConnection);
                 if (newSelectedItem != null) {
@@ -737,15 +885,25 @@ public class BridgeLinkLauncher extends Application implements Progress {
 
             dialog.showAndWait().ifPresent(name -> {
                 if (StringUtils.isNotBlank(name)) {
+                    TreeItem<Connection> selectedItem = connectionsTreeView.getSelectionModel().getSelectedItem();
+                    Connection source = (selectedItem != null) ? selectedItem.getValue() : null;
+
                     String finalName = name;
                     int cnt = 1;
                     while (nameExists(finalName)) {
                         finalName = name + " Copy " + cnt++;
                     }
-                    Connection newConn = new Connection(UUID.randomUUID().toString(), finalName,
-                            addressTextField.getText(), getJavaHome(), bundledJavaCombo.getValue().toString(),
-                            "", heapSizeCombo.getValue().toString(), "", showConsoleCheckBox.isSelected(),
-                            false, "", false, "", false, usernameTextField.getText(), passwordField.getText(), groupTextField.getText(), jvmOptionsTextField.getText(), closeWindowCheckBox.isSelected(), clearCacheCheckBox.isSelected(), customJavaTextField.getText(), customJavaRadio.isSelected());
+                    // Duplicate the selected connection preserving all its properties
+                    // (icon, group, JVM options, notes, ...), overriding only id and name.
+                    Connection newConn;
+                    if (source != null && source.getAddress() != null) {
+                        newConn = new Connection(source);
+                    } else {
+                        newConn = new Connection();
+                        updateConnectionFromUI(newConn);
+                    }
+                    newConn.setId(UUID.randomUUID().toString());
+                    newConn.setName(finalName);
                     connectionsList.add(newConn);
                     updateTreeView();
                     saveConnections();
@@ -827,6 +985,28 @@ public class BridgeLinkLauncher extends Application implements Progress {
         launchThread = new Thread(() -> {
             try {
                 String host = addressTextField.getText();
+
+                // Optional SSH tunnel: open it first, then route the download
+                // through the local end of the tunnel.
+                SshTunnel tunnel = null;
+                String tunnelCmdText = sshTunnelTextField.getText().trim();
+                if (!tunnelCmdText.isEmpty()) {
+                    String error = SshTunnel.validate(tunnelCmdText);
+                    if (error != null) {
+                        throw new IllegalStateException("Invalid SSH Tunnel command: " + error);
+                    }
+                    tunnel = parseTunnel(tunnelCmdText);
+                    final SshTunnel activeTunnel = tunnel;
+                    updateProgressText("Opening SSH tunnel on localhost:" + activeTunnel.localPort + "...");
+                    startTunnelProcess(activeTunnel);
+                    host = activeTunnel.rewriteUrl(host);
+                    final String tunneledHost = host;
+                    Platform.runLater(() -> {
+                        progressText.setText("Launching " + tunneledHost + " (via SSH tunnel)");
+                        log("SSH tunnel active: " + String.join(" ", activeTunnel.buildCommand()));
+                    });
+                }
+
                 updateProgressText("Downloading JNLP from " + host);
 
                 DownloadJNLP download = new DownloadJNLP(host, cacheFolder, clearCacheCheckBox.isSelected());
@@ -883,6 +1063,8 @@ public class BridgeLinkLauncher extends Application implements Progress {
                     resetUI();
                 });
             } catch (Exception e ) {
+                // Failed to launch: do not leave an orphan tunnel behind
+                stopTunnelProcess();
                 Platform.runLater(() -> {
                     showErrorDialog(e, "Launch Failed");
                     resetUI();
@@ -908,7 +1090,148 @@ public class BridgeLinkLauncher extends Application implements Progress {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt(); // Restore interrupted status
             }
+            // If the tunnel was already opened, make sure it is not orphaned
+            stopTunnelProcess();
         }
+    }
+
+    /**
+     * Parses an already-validated ssh tunnel command into its components.
+     */
+    private static SshTunnel parseTunnel(String command) {
+        String error = SshTunnel.validate(command);
+        if (error != null) {
+            throw new IllegalStateException(error);
+        }
+        return SshTunnel.parse(command);
+    }
+
+    /**
+     * Starts the background "ssh -N" process for the given tunnel and waits
+     * until the local forwarded port accepts connections.
+     */
+    private void startTunnelProcess(SshTunnel tunnel) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(tunnel.buildCommand());
+        pb.redirectErrorStream(true);
+        Process p;
+        try {
+            p = pb.start();
+        } catch (Exception e) {
+            throw new Exception("Cannot execute \"ssh\". Make sure an OpenSSH client is installed and available in the PATH. (" + e.getMessage() + ")");
+        }
+        // The tunnel must die together with this JVM even if no shutdown hook is
+        // registered (e.g. when the app is started through the JavaFX launcher
+        // without going through main()).
+        final Process spawned = p;
+        try {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try {
+                    if (spawned.isAlive()) {
+                        spawned.destroy();
+                    }
+                } catch (Throwable ignored) {
+                    // best-effort cleanup during JVM shutdown
+                }
+            }, "ssh-tunnel-destroy"));
+        } catch (IllegalStateException ignored) {
+            // JVM already shutting down: nothing to register
+        }
+        tunnelProcess = p;
+
+        boolean listening = false;
+        long deadline = System.currentTimeMillis() + 15000;
+        while (System.currentTimeMillis() < deadline) {
+            if (!p.isAlive()) {
+                int code = p.exitValue();
+                throw new Exception("The SSH tunnel closed immediately (exit code " + code + ").\n" +
+                        "Check the command, the jump host reachability and the SSH credentials/key.");
+            }
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new java.net.InetSocketAddress("localhost", tunnel.localPort), 500);
+                listening = true;
+                break;
+            } catch (Exception ignored) {
+                Thread.sleep(300);
+            }
+        }
+        if (!listening) {
+            stopTunnelProcess();
+            throw new Exception("Timed out waiting for the SSH tunnel: localhost:" + tunnel.localPort +
+                    " is not accepting connections.\nThe remote endpoint may be unreachable through the jump host.");
+        }
+    }
+
+    /**
+     * Terminates the background tunnel process, if one is running. The tunnel
+     * is normally kept alive for the whole BridgeLink session (the Java child
+     * process inherits the listening port) and is destroyed when this launcher
+     * exits thanks to the shutdown hook registered in main().
+     */
+    private void stopTunnelProcess() {
+        Process p = tunnelProcess;
+        tunnelProcess = null;
+        if (p != null && p.isAlive()) {
+            p.destroy();
+        }
+    }
+
+    /**
+     * Validates the tunnel command currently typed in the form, then briefly
+     * opens the tunnel to verify it works, and closes it again.
+     */
+    private void testSshTunnel() {
+        String cmd = sshTunnelTextField.getText().trim();
+        if (cmd.isEmpty()) {
+            Alert info = new Alert(Alert.AlertType.INFORMATION);
+            info.setTitle("SSH Tunnel");
+            info.setHeaderText("No SSH tunnel configured");
+            info.setContentText("Enter a command like:\n  ssh -L 8443:mirth.prova.it:8443 root@node01.picopalla.it\nthen press Test again.");
+            info.initOwner(primaryStage);
+            info.showAndWait();
+            return;
+        }
+
+        String error = SshTunnel.validate(cmd);
+        if (error != null) {
+            showAlert("Invalid SSH Tunnel command: " + error);
+            return;
+        }
+
+        final SshTunnel tunnel = SshTunnel.parse(cmd);
+        sshTunnelTestButton.setDisable(true);
+        Thread t = new Thread(() -> {
+            String message;
+            Alert.AlertType type;
+            try {
+                startTunnelProcess(tunnel);
+                message = "Tunnel established successfully:\n" +
+                        String.join(" ", tunnel.buildCommand()) + "\n\n" +
+                        "localhost:" + tunnel.localPort + " is forwarding to " +
+                        tunnel.remoteHost + ":" + tunnel.remotePort + ".\n" +
+                        "The test tunnel has been closed; it will be reopened automatically at Launch.";
+                type = Alert.AlertType.INFORMATION;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                message = "Tunnel test cancelled.";
+                type = Alert.AlertType.WARNING;
+            } catch (Exception e) {
+                message = e.getMessage() != null ? e.getMessage() : e.toString();
+                type = Alert.AlertType.ERROR;
+            } finally {
+                stopTunnelProcess();
+            }
+            final Alert alert = new Alert(type);
+            alert.setTitle("SSH Tunnel Test");
+            alert.setHeaderText(type == Alert.AlertType.INFORMATION ? "OK" : "Failed");
+            alert.setContentText(message);
+            Platform.runLater(() -> {
+                alert.initOwner(primaryStage);
+                alert.showAndWait();
+                sshTunnelTestButton.setDisable(false);
+            });
+        }, "SSH Tunnel Test");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void importConnections() {
@@ -994,7 +1317,8 @@ public class BridgeLinkLauncher extends Application implements Progress {
                             conn.isSslCipherSuitesCustom(), conn.getSslCipherSuites(),
                             conn.isUseLegacyDHSettings(), "", "",
                             conn.getGroup(), conn.getJvmOptions(), conn.isCloseWindow(),
-                            conn.isClearCacheJars(), conn.getCustomJavaHome(), conn.isUseCustomJavaHome());
+                            conn.isClearCacheJars(), conn.getCustomJavaHome(), conn.isUseCustomJavaHome(),
+                            conn.getNotes());
                     sanitized.add(copy);
                 }
                 objectMapper.writeValue(file, sanitized);
@@ -1064,6 +1388,9 @@ public class BridgeLinkLauncher extends Application implements Progress {
         passwordField.setDisable(!finalEnabled);
         heapSizeCombo.setDisable(!finalEnabled);
         jvmOptionsTextField.setDisable(!finalEnabled);
+        notesTextArea.setDisable(!finalEnabled);
+        sshTunnelTextField.setDisable(!finalEnabled);
+        sshTunnelTestButton.setDisable(!finalEnabled);
         showConsoleCheckBox.setDisable(!finalEnabled);
         clearCacheCheckBox.setDisable(!finalEnabled);
         iconButton.setDisable(!finalEnabled);
@@ -1165,11 +1492,11 @@ public class BridgeLinkLauncher extends Application implements Progress {
     private void addConnection(String name, String address, String javaHome, String javaHomeBundledValue,
                                String javaFxHome, String heapSize, String icon, boolean showJavaConsole,
                                String sslProtocols, boolean sslProtocolsCustom, String sslCipherSuites,
-                               boolean useLegacyDHSettings, String username, String password, String group, String jvmOptions, boolean closeWindow, String customJavaHome, boolean useCustomJavaHome) {
+                               boolean useLegacyDHSettings, String username, String password, String group, String jvmOptions, boolean closeWindow, String customJavaHome, boolean useCustomJavaHome, String notes) {
         Connection conn = new Connection(UUID.randomUUID().toString(), name, address, javaHome,
                 javaHomeBundledValue, javaFxHome, heapSize, icon, showJavaConsole,
                 sslProtocolsCustom, sslProtocols, false, sslCipherSuites, useLegacyDHSettings,
-                username, password, group, jvmOptions, closeWindow, false, customJavaHome, useCustomJavaHome);
+                username, password, group, jvmOptions, closeWindow, false, customJavaHome, useCustomJavaHome, notes);
         this.connectionsList.add(conn);
         updateTreeView(); // Update tree after adding
         saveConnections();
@@ -1178,10 +1505,10 @@ public class BridgeLinkLauncher extends Application implements Progress {
     }
 
     private void updateUIFromConnection(Connection conn) {
-        groupTextField.setText(conn.getGroup() != null ? conn.getGroup() : "");
-        addressTextField.setText(conn.getAddress());
-        usernameTextField.setText(conn.getUsername());
-        passwordField.setText(conn.getPassword());
+        groupTextField.setText(StringUtils.defaultString(conn.getGroup()));
+        addressTextField.setText(StringUtils.defaultString(conn.getAddress()));
+        usernameTextField.setText(StringUtils.defaultString(conn.getUsername()));
+        passwordField.setText(StringUtils.defaultString(conn.getPassword()));
         showConsoleCheckBox.setSelected(conn.isShowJavaConsole());
 
         String javaHomeBundledValue = conn.getJavaHomeBundledValue();
@@ -1199,13 +1526,16 @@ public class BridgeLinkLauncher extends Application implements Progress {
                 break;
             }
         }
-        jvmOptionsTextField.setText(conn.getJvmOptions());
+        jvmOptionsTextField.setText(StringUtils.defaultString(conn.getJvmOptions()));
+        notesTextArea.setText(StringUtils.defaultString(conn.getNotes()));
+        sshTunnelTextField.setText(StringUtils.defaultString(conn.getSshTunnelCommand()));
         closeWindowCheckBox.setSelected(conn.isCloseWindow());
         clearCacheCheckBox.setSelected(conn.isClearCacheJars());
+        trustSelfSignedCheckBox.setSelected(conn.isTrustSelfSignedCertificate());
 
         // Handle custom Java home setting
         String customJavaHome = conn.getCustomJavaHome();
-        customJavaTextField.setText(customJavaHome != null ? customJavaHome : "");
+        customJavaTextField.setText(StringUtils.defaultString(customJavaHome));
         
         // Set radio button based on stored preference
         if (conn.isUseCustomJavaHome()) {
@@ -1232,6 +1562,9 @@ public class BridgeLinkLauncher extends Application implements Progress {
         conn.setJavaFxHome("");
         conn.setHeapSize(this.heapSizeCombo.getValue().toString());
         conn.setJvmOptions(this.jvmOptionsTextField.getText());
+        conn.setNotes(this.notesTextArea.getText());
+        String tunnelCmd = this.sshTunnelTextField.getText().trim();
+        conn.setSshTunnelCommand(tunnelCmd.isEmpty() ? null : tunnelCmd);
 
         // Apply temporary icon if it exists, otherwise keep existing icon
         if (tempSelectedIcon != null) {
@@ -1247,6 +1580,7 @@ public class BridgeLinkLauncher extends Application implements Progress {
         conn.setSslCipherSuitesCustom(false);
         conn.setSslCipherSuites("");
         conn.setUseLegacyDHSettings(false);
+        conn.setTrustSelfSignedCertificate(trustSelfSignedCheckBox.isSelected());
         conn.setCloseWindow(this.closeWindowCheckBox.isSelected());
         conn.setClearCacheJars(this.clearCacheCheckBox.isSelected());
 
@@ -1286,23 +1620,12 @@ public class BridgeLinkLauncher extends Application implements Progress {
         String originalIcon = selected.getIcon();
         log("Original Icon: " + originalIcon + ", Current Icon: " + currentIcon);
 
-
-        boolean unchanged =
-                StringUtils.equals(selected.getGroup(), groupTextField.getText()) &&
-                StringUtils.equals(selected.getAddress(), this.addressTextField.getText()) &&
-                StringUtils.equals(selected.getUsername(), this.usernameTextField.getText()) &&
-                StringUtils.equals(selected.getPassword(), this.passwordField.getText()) &&
-                StringUtils.equals(selected.getJavaHome(), getJavaHome()) &&
-                StringUtils.equals(selected.getJavaHomeBundledValue(), this.bundledJavaCombo.getValue().toString()) &&
-                StringUtils.equals(selected.getCustomJavaHome(), this.customJavaTextField.getText()) &&
-                selected.isUseCustomJavaHome() == customJavaRadio.isSelected() &&
-                StringUtils.equals(selected.getHeapSize(), this.heapSizeCombo.getValue().toString()) &&
-                StringUtils.equals(selected.getJvmOptions(), this.jvmOptionsTextField.getText()) &&
-                selected.isShowJavaConsole() == showConsoleCheckBox.isSelected() &&
-                selected.isCloseWindow() == closeWindowCheckBox.isSelected() &&
-                selected.isClearCacheJars() == clearCacheCheckBox.isSelected() &&
-                StringUtils.equals(originalIcon, currentIcon);
+        // Compare the live form against the snapshot taken when the connection
+        // was loaded (or right after the last save). This keeps the list of
+        // compared fields in one single place.
+        boolean unchanged = !isFormDirty();
         this.saveButton.setDisable(unchanged);
+        this.revertButton.setDisable(unchanged || isLaunching);
     }
 
     private String getCurrentSelectedIcon() {
@@ -1315,6 +1638,90 @@ public class BridgeLinkLauncher extends Application implements Progress {
             return selectedItem.getValue().getIcon();
         }
         return "";
+    }
+
+    /** Snapshot of every form value that {@link #updateSaveButtonState()} compares. */
+    private Map<String, Object> captureFormValues() {
+        Map<String, Object> values = new HashMap<>();
+        values.put("group", groupTextField.getText());
+        values.put("address", addressTextField.getText());
+        values.put("username", usernameTextField.getText());
+        values.put("password", passwordField.getText());
+        values.put("javaHome", getJavaHome());
+        values.put("javaHomeBundledValue", bundledJavaCombo.getValue() != null ? bundledJavaCombo.getValue().toString() : "");
+        values.put("customJavaHome", customJavaTextField.getText());
+        values.put("useCustomJavaHome", customJavaRadio.isSelected());
+        values.put("heapSize", heapSizeCombo.getValue() != null ? heapSizeCombo.getValue().toString() : "");
+        values.put("jvmOptions", jvmOptionsTextField.getText());
+        values.put("notes", notesTextArea.getText());
+        values.put("sshTunnelCommand", sshTunnelTextField.getText().trim());
+        values.put("showJavaConsole", showConsoleCheckBox.isSelected());
+        values.put("trustSelfSignedCertificate", trustSelfSignedCheckBox.isSelected());
+        values.put("closeWindow", closeWindowCheckBox.isSelected());
+        values.put("clearCacheJars", clearCacheCheckBox.isSelected());
+        values.put("icon", getCurrentSelectedIcon());
+        return values;
+    }
+
+    /**
+     * Takes a snapshot of the current form so later edits can be detected and
+     * discarded with Revert. Must be called right after the form has been
+     * populated from a connection (or reset to defaults).
+     */
+    private void takeFormSnapshot() {
+        loadedSnapshot = captureFormValues();
+    }
+
+    /** @return true when the form differs from the last snapshot taken. */
+    private boolean isFormDirty() {
+        Map<String, Object> snapshot = loadedSnapshot;
+        if (snapshot == null) {
+            return false;
+        }
+        return !captureFormValues().equals(snapshot);
+    }
+
+    /**
+     * Discards unsaved changes: re-populates the form from the connection's
+     * stored values (i.e. what was last persisted) and refreshes the tree.
+     */
+    private void revertChanges() {
+        if (isLaunching) {
+            return;
+        }
+        TreeItem<Connection> selectedItem = connectionsTreeView.getSelectionModel().getSelectedItem();
+        Connection selected = selectedItem != null ? selectedItem.getValue() : null;
+        if (selected == null || selected.getAddress() == null) {
+            return;
+        }
+        tempSelectedIcon = null; // drop any pending icon selection
+        updateUIFromConnection(selected);
+        takeFormSnapshot();
+        saveButton.setDisable(true);
+        revertButton.setDisable(true);
+        connectionsTreeView.refresh(); // cell tooltips are derived from the notes field
+    }
+
+    /**
+     * Warns about unsaved edits before closing the launcher; consumes the close
+     * request when the user chooses to stay.
+     */
+    private void handleWindowCloseRequest(javafx.stage.WindowEvent event) {
+        if (!isLaunching && isFormDirty()) {
+            Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+            alert.setTitle("Unsaved Changes");
+            alert.setHeaderText("There are unsaved changes for the selected connection.");
+            alert.setContentText("Do you want to leave without saving?");
+            Stage dialogStage = (Stage) alert.getDialogPane().getScene().getWindow();
+            dialogStage.getIcons().add(LAUNCHER_ICON);
+            alert.initOwner(primaryStage);
+            Optional<ButtonType> response = alert.showAndWait();
+            if (!response.isPresent() || response.get() != ButtonType.OK) {
+                event.consume();
+                return;
+            }
+        }
+        stopTunnelProcess();
     }
 
     public void showAlert(String err){
@@ -1411,6 +1818,29 @@ public class BridgeLinkLauncher extends Application implements Progress {
     }
     public static void main(String[] args) {
         SSLBypass.disableSSLVerification();
+        // Keep a reference to the running application so the shutdown hook can
+        // terminate any SSH tunnel process spawned by the launcher (Java 8 API only).
+        RUNTIME_APP_HOLDER = new BridgeLinkLauncher[1];
+        final BridgeLinkLauncher[] appHolder = RUNTIME_APP_HOLDER;
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            BridgeLinkLauncher app = appHolder[0];
+            if (app != null) {
+                try {
+                    app.stopTunnelProcess();
+                } catch (Throwable t) {
+                    // best-effort cleanup: never let the hook crash the JVM shutdown
+                }
+            }
+        }, "ssh-tunnel-cleanup"));
         Application.launch(BridgeLinkLauncher.class, args);
+    }
+
+    /** Shared holder so {@link #start} and the shutdown hook in {@link #main} can meet. */
+    private static BridgeLinkLauncher[] RUNTIME_APP_HOLDER;
+
+    @SuppressWarnings("unchecked")
+    private static BridgeLinkLauncher[] getAppHolder() {
+        BridgeLinkLauncher[] holder = RUNTIME_APP_HOLDER;
+        return holder != null ? holder : new BridgeLinkLauncher[1];
     }
 }

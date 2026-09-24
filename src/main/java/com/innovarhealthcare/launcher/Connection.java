@@ -23,12 +23,67 @@ public class Connection {
     private boolean clearCacheJars;
     private String customJavaHome;  // New field for custom Java home path
     private boolean useCustomJavaHome; // New field to track if custom Java home radio is selected
+    private String notes; // Notes about the connection
+    private boolean trustSelfSignedCertificate; // Per-connection opt-in to skip SSL verification
+    private String sshTunnelCommand; // Optional "ssh -L ..." command used to jump through an SSL/SSH tunnel
     // Constructors, getters, and setters
     public Connection() {}
 
+    // Copy constructor: duplicates all properties of an existing connection
+    public Connection(Connection other) {
+        this.id = other.id;
+        this.name = other.name;
+        this.address = other.address;
+        this.javaHome = other.javaHome;
+        this.javaHomeBundledValue = other.javaHomeBundledValue;
+        this.javaFxHome = other.javaFxHome;
+        this.heapSize = other.heapSize;
+        this.icon = other.icon;
+        this.showJavaConsole = other.showJavaConsole;
+        this.sslProtocolsCustom = other.sslProtocolsCustom;
+        this.sslProtocols = other.sslProtocols;
+        this.sslCipherSuitesCustom = other.sslCipherSuitesCustom;
+        this.sslCipherSuites = other.sslCipherSuites;
+        this.useLegacyDHSettings = other.useLegacyDHSettings;
+        this.username = other.username;
+        this.password = other.password;
+        this.group = other.group;
+        this.jvmOptions = other.jvmOptions;
+        this.closeWindow = other.closeWindow;
+        this.clearCacheJars = other.clearCacheJars;
+        this.customJavaHome = other.customJavaHome;
+        this.useCustomJavaHome = other.useCustomJavaHome;
+        this.notes = other.notes;
+        this.trustSelfSignedCertificate = other.trustSelfSignedCertificate;
+        this.sshTunnelCommand = other.sshTunnelCommand;
+    }
+
+    /**
+     * Convenience factory for a brand-new connection with sensible defaults.
+     */
+    public static Connection newDefault(String id, String name) {
+        Connection conn = new Connection();
+        conn.setId(id);
+        conn.setName(name);
+        conn.setAddress("https://localhost:8443");
+        conn.setJavaHome("BUNDLED");
+        conn.setJavaHomeBundledValue("Java 17");
+        conn.setJavaFxHome("");
+        conn.setHeapSize("512m");
+        conn.setIcon("");
+        conn.setUsername("");
+        conn.setPassword("");
+        conn.setGroup("");
+        conn.setJvmOptions("");
+        conn.setCustomJavaHome(null);
+        conn.setUseCustomJavaHome(false);
+        conn.setNotes("");
+        return conn;
+    }
+
     public Connection(String id, String name, String address, String javaHome, String javaHomeBundledValue, String javaFxHome,
                       String heapSize, String icon, boolean showJavaConsole, boolean sslProtocolsCustom, String sslProtocols,
-                      boolean sslCipherSuitesCustom, String sslCipherSuites, boolean useLegacyDHSettings, String username, String password, String group, String jvmOptions, boolean closeWindow, boolean clearCacheJars, String customJavaHome, boolean useCustomJavaHome) {
+                      boolean sslCipherSuitesCustom, String sslCipherSuites, boolean useLegacyDHSettings, String username, String password, String group, String jvmOptions, boolean closeWindow, boolean clearCacheJars, String customJavaHome, boolean useCustomJavaHome, String notes) {
         this.id = id;
         this.name = name;
         this.address = address;
@@ -51,6 +106,7 @@ public class Connection {
         this.clearCacheJars = clearCacheJars;
         this.customJavaHome = customJavaHome;
         this.useCustomJavaHome = useCustomJavaHome;
+        this.notes = notes;
     }
 
     public String getId() { return id; }
@@ -103,4 +159,10 @@ public class Connection {
     public void setCustomJavaHome(String customJavaHome) { this.customJavaHome = customJavaHome; }
     public boolean isUseCustomJavaHome() { return useCustomJavaHome; }
     public void setUseCustomJavaHome(boolean useCustomJavaHome) { this.useCustomJavaHome = useCustomJavaHome; }
+    public String getNotes() { return notes; }
+    public void setNotes(String notes) { this.notes = notes; }
+    public boolean isTrustSelfSignedCertificate() { return trustSelfSignedCertificate; }
+    public void setTrustSelfSignedCertificate(boolean trustSelfSignedCertificate) { this.trustSelfSignedCertificate = trustSelfSignedCertificate; }
+    public String getSshTunnelCommand() { return sshTunnelCommand; }
+    public void setSshTunnelCommand(String sshTunnelCommand) { this.sshTunnelCommand = sshTunnelCommand; }
 }
