@@ -1,1 +1,16 @@
-(empty)
+# Build output (Maven)
+target/
+
+# Provisioned JavaFX runtime (created by setup-jre.sh, ~165 MB)
+jre/
+
+# Maven shade plugin byproduct
+dependency-reduced-pom.xml
+
+# Launcher runtime data/cache if created outside target/
+data/
+cache/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

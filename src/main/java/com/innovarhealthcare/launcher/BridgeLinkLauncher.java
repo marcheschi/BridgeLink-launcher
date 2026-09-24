@@ -222,6 +222,9 @@ public class BridgeLinkLauncher extends Application implements Progress {
         // TreeView setup
         connectionsTreeView = new TreeView<>();
         connectionsTreeView.setEditable(true);
+        // Preferred height so the "fit to content" window sizing below always
+        // leaves a usable list of connections visible; Vgrow still expands it.
+        connectionsTreeView.setPrefHeight(240);
         VBox.setVgrow(connectionsTreeView, Priority.ALWAYS);
 
         // Cell factory for editing names
@@ -655,6 +658,15 @@ public class BridgeLinkLauncher extends Application implements Progress {
         stage.setScene(scene);
         stage.setOnCloseRequest(this::handleWindowCloseRequest);
         stage.show();
+
+        // Fit the window to its content on startup so every section — and a
+        // usable chunk of the connections tree — is visible; users can still
+        // resize freely afterwards.
+        root.layout();
+        stage.setWidth(Math.max(root.prefWidth(-1), 800));
+        stage.setHeight(Math.max(root.prefHeight(-1), 640));
+        stage.setMinWidth(720);
+        stage.setMinHeight(560);
 
         // Capture the initial snapshot so the dirty-tracking (Save/Revert) works
         // from the very first selection made above.
@@ -1159,6 +1171,33 @@ public class BridgeLinkLauncher extends Application implements Progress {
             throw new Exception("Timed out waiting for the SSH tunnel: localhost:" + tunnel.localPort +
                     " is not accepting connections.\nThe remote endpoint may be unreachable through the jump host.");
         }
+
+        // The local port accepting connections is not enough: ssh -L accepts the
+        // socket even when it cannot open a channel to the target, then closes it
+        // right away. Verify end-to-end with a protocol-agnostic probe: a working
+        // tunnel stays open waiting for data (timeout), a broken one EOFs at once.
+        boolean forwarding = false;
+        try (java.net.Socket s = new java.net.Socket()) {
+            s.connect(new java.net.InetSocketAddress("localhost", tunnel.localPort), 2000);
+            s.setSoTimeout(3000);
+            int b = -2;
+            try {
+                b = s.getInputStream().read();
+            } catch (java.net.SocketTimeoutException e) {
+                forwarding = true; // held open: the remote end is reachable
+            }
+            if (!forwarding && b != -1) {
+                forwarding = true; // server spoke first (e.g. TLS alert): tunnel works
+            }
+        } catch (java.io.IOException ignored) {
+            // connect/read failure means the tunnel is not usable
+        }
+        if (!forwarding) {
+            stopTunnelProcess();
+            throw new Exception("The SSH tunnel is listening, but the jump host could not reach " +
+                    tunnel.remoteHost + ":" + tunnel.remotePort + ".\n" +
+                    "Check that the target host and port are correct and reachable from the jump host.");
+        }
     }
 
     /**
@@ -1220,11 +1259,14 @@ public class BridgeLinkLauncher extends Application implements Progress {
             } finally {
                 stopTunnelProcess();
             }
-            final Alert alert = new Alert(type);
-            alert.setTitle("SSH Tunnel Test");
-            alert.setHeaderText(type == Alert.AlertType.INFORMATION ? "OK" : "Failed");
-            alert.setContentText(message);
+            final String resultMessage = message;
+            final Alert.AlertType resultType = type;
+            // The Alert (and its Stage) must be created on the FX Application Thread.
             Platform.runLater(() -> {
+                Alert alert = new Alert(resultType);
+                alert.setTitle("SSH Tunnel Test");
+                alert.setHeaderText(resultType == Alert.AlertType.INFORMATION ? "OK" : "Failed");
+                alert.setContentText(resultMessage);
                 alert.initOwner(primaryStage);
                 alert.showAndWait();
                 sshTunnelTestButton.setDisable(false);

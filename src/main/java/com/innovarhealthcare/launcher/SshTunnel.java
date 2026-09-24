@@ -194,15 +194,14 @@ public class SshTunnel {
 
     /**
      * Rewrites the given codebase URL so it points at the local end of the
-     * tunnel: scheme becomes http and host/port become localhost:localPort.
+     * tunnel: host/port become localhost:localPort while the original scheme
+     * (http or https) is preserved, since an SSH forward is a plain TCP pipe
+     * and TLS passes through it unchanged.
      */
     public String rewriteUrl(String originalUrl) throws IllegalArgumentException {
         try {
             URI uri = new URI(originalUrl.trim());
             String scheme = uri.getScheme() == null ? "http" : uri.getScheme();
-            if (scheme.equalsIgnoreCase("https")) {
-                scheme = "http";
-            }
             StringBuilder sb = new StringBuilder();
             sb.append(scheme).append("://localhost:").append(localPort);
             if (StringUtils.isNotEmpty(uri.getRawPath())) {
