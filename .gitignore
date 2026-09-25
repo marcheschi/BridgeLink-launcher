@@ -11,6 +11,11 @@ dependency-reduced-pom.xml
 data/
 cache/
 
+# Windows release build outputs (assembled app, embedded JRE, installer)
+build/windows/app/
+build/windows/jre/
+build/windows/output/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

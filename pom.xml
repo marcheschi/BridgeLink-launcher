@@ -6,7 +6,7 @@
 
     <groupId>com.innovarhealthcare</groupId>
     <artifactId>bridge-link-launcher</artifactId>
-    <version>1.4.0</version>
+    <version>1.5.0</version>
 
     <properties>
         <maven.compiler.source>1.8</maven.compiler.source>
@@ -69,4 +69,70 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            Windows release build: wraps the shaded jar in a native .exe launcher
+            (launch4j) configured to use the JRE embedded in the install dir
+            (jre/, provisioned by build/windows/setup-jre.ps1 before packaging).
+
+            Activate with:  mvn -Pwindows-release package
+        -->
+        <profile>
+            <id>windows-release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.akathist.maven.plugins.launch4j</groupId>
+                        <artifactId>launch4j-maven-plugin</artifactId>
+                        <version>2.7.0</version>
+                        <executions>
+                            <execution>
+                                <id>launch4j</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>launch4j</goal>
+                                </goals>
+                                <configuration>
+                                    <headerType>gui</headerType>
+                                    <jar>${project.build.directory}/${project.build.finalName}.jar</jar>
+                                    <outfile>${project.build.directory}/BridgeLinkLauncher.exe</outfile>
+                                    <errTitle>BridgeLink Launcher</errTitle>
+                                    <downloadUrl>https://adoptium.net/temurin/releases/</downloadUrl>
+                                    <stayAlive>false</stayAlive>
+                                    <!-- Run from the install dir so relative paths
+                                         (jre/, lib/, data/, cache/) resolve correctly. -->
+                                    <chdir>.</chdir>
+                                    <icon>${project.basedir}/build/windows/BridgeLinkLauncher.ico</icon>
+                                    <!-- Prefer the embedded JRE shipped by the installer. -->
+                                    <jre>
+                                        <path>jre</path>
+                                        <minVersion>17</minVersion>
+                                        <requiresJdk>false</requiresJdk>
+                                        <requires64Bit>true</requires64Bit>
+                                    </jre>
+                                    <!-- Heap for the launcher UI itself (Mirth gets its
+                                         own JVM, configured per connection). -->
+                                    <initialHeapSize>134217728</initialHeapSize>
+                                    <maxHeapSize>536870912</maxHeapSize>
+                                    <versionInfo>
+                                        <fileVersion>${project.version}.0</fileVersion>
+                                        <txtFileVersion>${project.version}</txtFileVersion>
+                                        <fileDescription>BridgeLink Administrator Launcher</fileDescription>
+                                        <copyright>Mozilla Public License 2.0</copyright>
+                                        <productVersion>${project.version}.0</productVersion>
+                                        <txtProductVersion>${project.version}</txtProductVersion>
+                                        <productName>BridgeLink Administrator Launcher</productName>
+                                        <companyName>Innovar Healthcare</companyName>
+                                        <internalName>BridgeLinkLauncher</internalName>
+                                        <originalFilename>BridgeLinkLauncher.exe</originalFilename>
+                                    </versionInfo>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

@@ -1,0 +1,69 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [created]
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build with Maven (windows-release profile)
+        shell: pwsh
+        run: mvn -B -Pwindows-release -DskipTests package
+
+      - name: Assemble app folder
+        shell: pwsh
+        run: |
+          $version = (Select-Xml -Path pom.xml -XPath '/x:project/x:version' -Namespace @{ x = 'http://maven.apache.org/POM/4.0.0' }).Node.InnerText
+          Write-Host "Version: $version"
+          echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & powershell -ExecutionPolicy Bypass -File .\build\windows\setup-jre.ps1
+          $app = "build\windows\app"
+          New-Item -ItemType Directory -Path $app -Force | Out-Null
+          Copy-Item "target\bridge-link-launcher-$version.jar" $app
+          Copy-Item "target\BridgeLinkLauncher.exe" $app
+          New-Item -ItemType Directory -Path "$app\lib" -Force | Out-Null
+          Copy-Item "lib\java-console.jar" "$app\lib\java-console.jar"
+          Copy-Item "build\windows\jre" "$app\jre" -Recurse -Force
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "iscc" }
+          & $iscc "/DAppVersion=$env:VERSION" .\build\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BridgeLinkLauncher-windows-installer
+          path: build/windows/output/BridgeLinkLauncher-*-windows-x64-setup.exe
+          if-no-files-found: error
+
+      - name: Attach installer to release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload $env:GITHUB_REF_NAME `
+            (Get-ChildItem build\windows\output\BridgeLinkLauncher-*-windows-x64-setup.exe).FullName `
+            --clobber

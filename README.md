@@ -1,6 +1,38 @@
 # bridgelink-launcher
 An open source Admin Launcher for BridgeLink (and OSS Mirth Connect)
 
+## Windows Release (installer with embedded Java)
+
+The Windows release ships as a single `.exe` installer (`BridgeLinkLauncher-<version>-windows-x64-setup.exe`)
+that embeds a **private Java 17 runtime with JavaFX** (Zulu FX): end users do **not** need Java installed.
+
+What it installs (under `%LocalAppData%\Programs\BridgeLinkLauncher`, no admin rights required):
+
+- `BridgeLinkLauncher.exe` — native launcher (launch4j) bound to the embedded `jre\`
+- `bridge-link-launcher-<version>.jar` — the application
+- `jre\` — embedded JavaFX 17 runtime (this is the "Bundled Java 17" used at launch)
+- `lib\java-console.jar` — helper for the "Show Java Console" option
+
+Build it locally on a Windows machine with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build\windows\build-installer.ps1
+```
+
+The script builds with Maven (`-Pwindows-release`), provisions the JRE, assembles the app folder
+and compiles the installer with Inno Setup 6 (output in `build/windows/output/`).
+
+CI does the same automatically on every GitHub release (see `.github/workflows/windows-release.yml`):
+the installer is built on a Windows runner and attached to the release as an artifact.
+
+Notes:
+
+- The launcher prefers `javaw.exe` on Windows, so no extra console window appears.
+- The installer is per-user; saved connections live in `data\` inside the install folder and
+  are kept when upgrading (only `cache\` is removed on uninstall).
+- Connections that use a **custom** Java home are unaffected; connections using "Bundled Java"
+  will use the embedded runtime installed alongside the app.
+
 ## MacOS Specific Instructions
 Because the application is not signed by Apple, you may get a security warning and have to manually override your security settings to grant an exception to the launcher.
 

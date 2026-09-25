@@ -72,7 +72,9 @@ public class JavaConfig {
     public String getJavaHomeBuilder() {
         final boolean win = SystemUtils.IS_OS_WINDOWS;
         final boolean mac = SystemUtils.IS_OS_MAC;
-        final String exe = win ? "java.exe" : "java";
+        // On Windows prefer javaw.exe so launching BridgeLink does not keep an
+        // extra console window open; fallbacks below still try plain java.exe.
+        final String exe = win ? "javaw.exe" : "java";
 
         // First priority: use custom Java home if specified
         if (customJavaHome != null && !customJavaHome.isEmpty()) {
@@ -104,10 +106,16 @@ public class JavaConfig {
             return candidate.toString();
         }
 
-        // Fallback 1: try "jre/bin/java" relative to app
+        // Fallback 1: try "jre/bin/java(.exe)" relative to app (both javaw and java on Windows)
         Path alt1 = Paths.get("jre", "bin", exe);
         if (Files.isExecutable(alt1)) {
             return alt1.toString();
+        }
+        if (win) {
+            Path alt1b = Paths.get("jre", "bin", "java.exe");
+            if (Files.isExecutable(alt1b)) {
+                return alt1b.toString();
+            }
         }
 
         // Fallback 2: JAVA_HOME if set
@@ -117,10 +125,16 @@ public class JavaConfig {
             if (Files.isExecutable(alt2)) {
                 return alt2.toString();
             }
+            if (win) {
+                Path alt2b = Paths.get(javaHomeEnv, "bin", "java.exe");
+                if (Files.isExecutable(alt2b)) {
+                    return alt2b.toString();
+                }
+            }
         }
 
-        // Fallback 3: rely on PATH
-        return exe;
+        // Fallback 3: rely on PATH (java.exe/javadoc handled by the OS on Windows)
+        return win ? "java.exe" : exe;
     }
 
     public String getCustomJavaHome() {
