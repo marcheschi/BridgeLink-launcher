@@ -16,6 +16,8 @@
         <commons-lang3.version>3.12.0</commons-lang3.version>
         <jackson-databind.version>2.13.3</jackson-databind.version>
         <javafx.version>17.0.10</javafx.version>
+        <junit.version>5.10.2</junit.version>
+        <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
     </properties>
 
     <dependencies>
@@ -34,6 +36,20 @@
             <artifactId>jackson-databind</artifactId>
             <version>${jackson-databind.version}</version>
         </dependency>
+        <!-- OS keystore integration (Windows Credential Manager, macOS Keychain,
+             Linux GNOME/KDE keyring) for the password data key. -->
+        <dependency>
+            <groupId>com.github.javakeyring</groupId>
+            <artifactId>java-keyring</artifactId>
+            <version>1.0.4</version>
+        </dependency>
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <plugins>
@@ -45,6 +61,12 @@
                     <source>1.8</source>
                     <target>1.8</target>
                 </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
             </plugin>
 
             <plugin>

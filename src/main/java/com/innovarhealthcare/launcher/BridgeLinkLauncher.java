@@ -45,6 +45,7 @@ import javafx.stage.Stage;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.text.Text;
+import javafx.scene.paint.Color;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -140,6 +141,13 @@ public class BridgeLinkLauncher extends Application implements Progress {
     private File cacheFolder;  // New "cache" folder within appDir
     private String tempSelectedIcon;  // Temporarily selected icon (before save)
     private ConnectionStore connectionStore; // Persistence layer (load/save/import/export)
+    private ConnectionHealth connectionHealth; // background reachability probes
+    private UpdateChecker updateChecker;       // new-release notification
+    private Button healthRefreshButton;
+    private Label updateStatusLabel;
+    private Button openReleaseButton;
+    private Button dismissUpdateButton;
+    private String lastReleaseUrl;
     // Snapshot of the selected connection's form values, used to detect unsaved
     // changes and to implement Discard/Revert.
     private Map<String, Object> loadedSnapshot;
@@ -175,6 +183,21 @@ public class BridgeLinkLauncher extends Application implements Progress {
 
         initializeDirectories();
         connectionStore = new ConnectionStore(dataFolder, new File(appDir));
+
+        // Background reachability probes: status dots in the connection tree
+        connectionHealth = new ConnectionHealth();
+        connectionHealth.setListener((conn, status, message) -> connectionsTreeView.refresh());
+        connectionHealth.startMonitoring(new java.util.HashSet<>());
+        // Probe connections as they are loaded/added (initial load included)
+        connectionsList.addListener((javafx.collections.ListChangeListener<Connection>) change -> {
+            while (change.next()) {
+                if (change.wasAdded()) {
+                    for (Connection c : change.getAddedSubList()) {
+                        connectionHealth.check(c);
+                    }
+                }
+            }
+        });
 
         VBox root = new VBox(15);
         root.setPadding(new Insets(15));
@@ -216,7 +239,14 @@ public class BridgeLinkLauncher extends Application implements Progress {
         deleteButton = new Button("Delete");
         deleteButton.setDisable(true);
         deleteButton.setOnAction(e -> deleteCurrentConnection());
-        tableButtons.getChildren().addAll(filterField, newButton, saveButton, revertButton, duplicateButton, deleteButton);
+        healthRefreshButton = new Button("Refresh status");
+        healthRefreshButton.setTooltip(new Tooltip("Check now whether every configured server is reachable"));
+        healthRefreshButton.setOnAction(e -> {
+            if (connectionHealth != null) {
+                connectionHealth.checkAllNow();
+            }
+        });
+        tableButtons.getChildren().addAll(filterField, newButton, saveButton, revertButton, duplicateButton, deleteButton, healthRefreshButton);
         tableButtons.setAlignment(Pos.CENTER_LEFT);
 
         // TreeView setup
@@ -277,11 +307,31 @@ public class BridgeLinkLauncher extends Application implements Progress {
                             }
                         }
                         
+                        // Health status dot (shown once the connection has been probed)
+                        javafx.scene.Node healthGraphic = null;
+                        if (connectionHealth != null) {
+                            ConnectionHealth.Status hs = connectionHealth.getStatus(item);
+                            if (hs == ConnectionHealth.Status.REACHABLE || hs == ConnectionHealth.Status.UNREACHABLE) {
+                                Text dot = new Text("\u25CF");
+                                dot.setFill(hs == ConnectionHealth.Status.REACHABLE
+                                        ? Color.web("#2e9e44") : Color.web("#cc3333"));
+                                healthGraphic = dot;
+                            }
+                        }
+
                         if (iconImage != null) {
                             ImageView value = new ImageView(iconImage);
                             value.setPreserveRatio(true);
                             value.setFitHeight(15);
-                            setGraphic(value);
+                            if (healthGraphic != null) {
+                                HBox graphic = new HBox(3, value, healthGraphic);
+                                graphic.setAlignment(Pos.CENTER_LEFT);
+                                setGraphic(graphic);
+                            } else {
+                                setGraphic(value);
+                            }
+                        } else if (healthGraphic != null) {
+                            setGraphic(healthGraphic);
                         } else {
                             setGraphic(null);
                         }
@@ -296,6 +346,16 @@ public class BridgeLinkLauncher extends Application implements Progress {
                             tip.append(item.getName()).append('\n');
                         }
                         tip.append(item.getAddress());
+                        if (connectionHealth != null) {
+                            ConnectionHealth.Status hs = connectionHealth.getStatus(item);
+                            if (hs == ConnectionHealth.Status.REACHABLE) {
+                                tip.append("\n\nStatus: reachable (")
+                                   .append(connectionHealth.getStatusMessage(item)).append(')');
+                            } else if (hs == ConnectionHealth.Status.UNREACHABLE) {
+                                tip.append("\n\nStatus: unreachable (")
+                                   .append(connectionHealth.getStatusMessage(item)).append(')');
+                            }
+                        }
                         if (StringUtils.isNotBlank(item.getNotes())) {
                             tip.append("\n\nNotes:\n").append(item.getNotes());
                         }
@@ -640,7 +700,24 @@ public class BridgeLinkLauncher extends Application implements Progress {
         // Bottom Section (unchanged)
         HBox bottomBox = new HBox(10);
         closeWindowCheckBox = new CheckBox("Close after launch");
-        bottomBox.getChildren().add(closeWindowCheckBox);
+        updateStatusLabel = new Label("");
+        updateStatusLabel.setVisible(false);
+        updateStatusLabel.setStyle("-fx-text-fill: #b8860b; -fx-font-weight: bold;");
+        openReleaseButton = new Button("Download");
+        openReleaseButton.setVisible(false);
+        openReleaseButton.setOnAction(e -> {
+            if (lastReleaseUrl != null) {
+                getHostServices().showDocument(lastReleaseUrl);
+            }
+        });
+        dismissUpdateButton = new Button("\u00D7");
+        dismissUpdateButton.setVisible(false);
+        dismissUpdateButton.setOnAction(e -> {
+            updateStatusLabel.setVisible(false);
+            openReleaseButton.setVisible(false);
+            dismissUpdateButton.setVisible(false);
+        });
+        bottomBox.getChildren().addAll(closeWindowCheckBox, updateStatusLabel, openReleaseButton, dismissUpdateButton);
         bottomBox.setAlignment(Pos.CENTER_LEFT);
 
         // Assemble layout
@@ -678,6 +755,23 @@ public class BridgeLinkLauncher extends Application implements Progress {
 
         // Check write permissions to "data" and "cache" folders after showing the application
         checkWritePermissions(stage);
+
+        // Check GitHub for a newer release (silent; shows a banner when found)
+        updateChecker = new UpdateChecker();
+        updateChecker.checkAsync(false, result -> {
+            if (result.updateAvailable) {
+                showUpdateBanner(result.latestVersion, result.releaseUrl);
+            }
+        });
+    }
+
+    /** Shows the "new version available" banner in the bottom bar. */
+    private void showUpdateBanner(String latestVersion, String releaseUrl) {
+        lastReleaseUrl = releaseUrl;
+        updateStatusLabel.setText("New version available: v" + latestVersion);
+        updateStatusLabel.setVisible(true);
+        openReleaseButton.setVisible(true);
+        dismissUpdateButton.setVisible(true);
     }
 
     private void initializeDirectories() {
@@ -1764,6 +1858,9 @@ public class BridgeLinkLauncher extends Application implements Progress {
             }
         }
         stopTunnelProcess();
+        if (connectionHealth != null) {
+            connectionHealth.shutdown();
+        }
     }
 
     public void showAlert(String err){

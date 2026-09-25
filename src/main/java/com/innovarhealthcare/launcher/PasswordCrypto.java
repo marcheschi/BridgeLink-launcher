@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Optional;
 
 /**
  * Encrypts/decrypts connection passwords at rest so that {@code connections.json}
@@ -20,12 +21,15 @@ import java.util.Base64;
  *
  * <p>Design notes:
  * <ul>
- *   <li>A random 256-bit data key is generated on first use and stored (itself
- *       AES-GCM encrypted with a machine-derived key) next to the data folder,
- *       in a hidden file readable only by the current user.</li>
- *   <li>The machine-derived key combines the user name, OS name and the JVM
- *       installation path, so the data key cannot be decrypted from a different
- *       machine/user out of the box.</li>
+ *   <li>A random 256-bit data key is generated on first use. When an OS keystore
+ *       is available (Windows Credential Manager, macOS Keychain, Linux
+ *       GNOME/KDE keyring) the key is stored there, bound to the user account.
+ *       Otherwise it is stored next to the data folder, AES-GCM encrypted with a
+ *       machine-derived key, in a hidden file readable only by the current
+ *       user.</li>
+ *   <li>The machine-derived fallback key combines the user name, OS name and
+ *       the JVM installation path, so the data key cannot be decrypted from a
+ *       different machine/user out of the box.</li>
  *   <li>Passwords are stored base64-encoded as {@code iv:ciphertext}. Any value
  *       that does not carry the {@link #PREFIX} marker is treated as legacy
  *       plain text: it still works (backward compatibility) but gets re-encrypted
@@ -124,9 +128,25 @@ public final class PasswordCrypto {
 
     /**
      * Loads the persisted data key, creating and storing one on first use.
+     *
+     * <p>Storage strategy: the OS keystore is preferred when available; the
+     * encrypted {@code .bridgekey} file is the fallback. When a key already
+     * exists in one store and the other is used later, the key is migrated so
+     * existing passwords keep working after an upgrade (and vice versa when
+     * the keystore becomes unavailable).
      */
     private static synchronized SecretKey loadOrCreateKey(Path keyFile) throws IOException, GeneralSecurityException {
         SecretKey master = deriveMasterKey();
+
+        // 1. OS keystore (preferred)
+        if (KeyringStore.isAvailable()) {
+            Optional<byte[]> stored = KeyringStore.load();
+            if (stored.isPresent()) {
+                return new SecretKeySpec(stored.get(), "AES");
+            }
+        }
+
+        // 2. Encrypted file fallback (and migration source from pre-keyring installs)
         if (Files.exists(keyFile)) {
             try {
                 String stored = new String(Files.readAllBytes(keyFile), StandardCharsets.UTF_8).trim();
@@ -139,17 +159,28 @@ public final class PasswordCrypto {
                 Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
                 cipher.init(Cipher.DECRYPT_MODE, master, new GCMParameterSpec(TAG_SIZE_BITS, iv));
                 byte[] keyBytes = cipher.doFinal(cipherText);
-                return new SecretKeySpec(keyBytes, 0, KEY_SIZE_BITS / 8, "AES");
+                SecretKey dataKey = new SecretKeySpec(keyBytes, 0, KEY_SIZE_BITS / 8, "AES");
+
+                // Migrate to the OS keystore when available (one-way upgrade).
+                if (KeyringStore.isAvailable() && KeyringStore.save(keyBytes)) {
+                    Files.deleteIfExists(keyFile);
+                }
+                return dataKey;
             } catch (GeneralSecurityException | IllegalArgumentException | IndexOutOfBoundsException e) {
                 throw new IOException("Data key file is corrupt or was created on another machine: " + keyFile, e);
             }
         }
 
-        // Generate a fresh random data key and persist it encrypted.
+        // 3. Generate a fresh random data key and persist it.
         byte[] keyBytes = new byte[KEY_SIZE_BITS / 8];
         RANDOM.nextBytes(keyBytes);
         SecretKey dataKey = new SecretKeySpec(keyBytes, "AES");
 
+        boolean savedToKeyring = false;
+        if (KeyringStore.isAvailable()) {
+            savedToKeyring = KeyringStore.save(keyBytes);
+        }
+        if (!savedToKeyring) {
         byte[] iv = new byte[IV_SIZE_BYTES];
         RANDOM.nextBytes(iv);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
@@ -166,6 +197,7 @@ public final class PasswordCrypto {
         Files.write(keyFile, (PREFIX + ENCRYPTED_PREFIX + Base64.getEncoder().encodeToString(combined))
                 .getBytes(StandardCharsets.UTF_8));
         restrictPermissions(keyFile);
+        }
         return dataKey;
     }
 

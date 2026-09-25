@@ -69,18 +69,10 @@ public class SshTunnel {
                 if (!m.matches()) {
                     return "Invalid -L spec \"" + spec + "\". Expected format: localport:host:hostport (e.g. 8443:mirth.prova.it:8443)";
                 }
-                tunnel.localPort = Integer.parseInt(m.group(1));
-                tunnel.remoteHost = m.group(2);
-                tunnel.remotePort = Integer.parseInt(m.group(3));
+                applyForwardSpec(tunnel, spec, m);
                 if (tunnel.localPort == 0 || tunnel.localPort > 65535
                         || tunnel.remotePort == 0 || tunnel.remotePort > 65535) {
                     return "Ports in the -L spec must be between 1 and 65535.";
-                }
-                int firstColon = spec.indexOf(':');
-                int lastColon = spec.lastIndexOf(':');
-                String head = spec.substring(0, firstColon);
-                if (head.contains(":")) { // bind address prefix present
-                    tunnel.localHost = head.substring(0, head.indexOf(':'));
                 }
                 forwardFound = true;
             } else if (t.equals("-p")) {
@@ -137,14 +129,7 @@ public class SshTunnel {
                 String spec = tokens.get(++i);
                 Matcher m = FORWARD_PATTERN.matcher(spec);
                 if (m.matches()) {
-                    tunnel.localPort = Integer.parseInt(m.group(1));
-                    tunnel.remoteHost = m.group(2);
-                    tunnel.remotePort = Integer.parseInt(m.group(3));
-                    int firstColon = spec.indexOf(':');
-                    String head = spec.substring(0, firstColon);
-                    if (head.contains(":")) {
-                        tunnel.localHost = head.substring(0, head.indexOf(':'));
-                    }
+                    applyForwardSpec(tunnel, spec, m);
                 }
             } else if (t.equals("-p") && i + 1 < tokens.size()) {
                 try {
@@ -214,6 +199,36 @@ public class SshTunnel {
         } catch (Exception e) {
             throw new IllegalArgumentException("Cannot parse address \"" + originalUrl
                     + "\": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Extracts bind address, local port, remote host and remote port from a -L
+     * forwarding spec, handling the optional bind prefix: "[ipv6]:p:h:p",
+     * "ipv4:p:h:p" (four colon-separated fields) and the plain "p:h:p" form.
+     */
+    private static void applyForwardSpec(SshTunnel tunnel, String spec, Matcher m) {
+        if (spec.startsWith("[")) {
+            int close = spec.indexOf(']');
+            tunnel.localHost = spec.substring(1, close);
+            String rest = spec.substring(close + 2);
+            int first = rest.indexOf(':');
+            int last = rest.lastIndexOf(':');
+            tunnel.localPort = Integer.parseInt(rest.substring(0, first));
+            tunnel.remoteHost = rest.substring(first + 1, last);
+            tunnel.remotePort = Integer.parseInt(rest.substring(last + 1));
+        } else if (spec.split(":", -1).length >= 4) {
+            int first = spec.indexOf(':');
+            int second = spec.indexOf(':', first + 1);
+            int last = spec.lastIndexOf(':');
+            tunnel.localHost = spec.substring(0, first);
+            tunnel.localPort = Integer.parseInt(spec.substring(first + 1, second));
+            tunnel.remoteHost = spec.substring(second + 1, last);
+            tunnel.remotePort = Integer.parseInt(spec.substring(last + 1));
+        } else {
+            tunnel.localPort = Integer.parseInt(m.group(1));
+            tunnel.remoteHost = m.group(2);
+            tunnel.remotePort = Integer.parseInt(m.group(3));
         }
     }
 
