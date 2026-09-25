@@ -1,6 +1,19 @@
 # bridgelink-launcher
 An open source Admin Launcher for BridgeLink (and OSS Mirth Connect)
 
+## Download
+
+Latest release: **[v1.5.0](https://github.com/marcheschi/BridgeLink-launcher/releases/tag/v1.5.0)**
+
+| Platform | File | Notes |
+|---|---|---|
+| Windows x64 | [BridgeLinkLauncher-1.5.0-windows-x64-setup.exe](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/BridgeLinkLauncher-1.5.0-windows-x64-setup.exe) | Installer with **embedded Java 17 + JavaFX** — no Java installation required |
+| Cross-platform | [bridge-link-launcher-1.5.0.jar](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/bridge-link-launcher-1.5.0.jar) | Executable jar, run with any JDK 17+: `java -jar bridge-link-launcher-1.5.0.jar` |
+| Linux | [bridgelink-starter.sh](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/bridgelink-starter.sh) | One-shot starter: runs the jar and auto-provisions the JavaFX JRE |
+| Linux | [setup-jre.sh](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/setup-jre.sh) | Provisions a Zulu FX 17 runtime into `./jre` (idempotent) |
+
+All downloads: [Releases page](https://github.com/marcheschi/BridgeLink-launcher/releases)
+
 ## Windows Release (installer with embedded Java)
 
 The Windows release ships as a single `.exe` installer (`BridgeLinkLauncher-<version>-windows-x64-setup.exe`)
