@@ -45,11 +45,27 @@ class JavaConfigTest {
     void relativeBundledPathIsPreferredForJava17() {
         JavaConfig cfg = new JavaConfig("512m", "Java 17", "", null);
         String resolved = cfg.getJavaHomeBuilder();
-        // On a machine without ./jre it ends up on the PATH fallback
-        String expectedFallback = WINDOWS ? "java.exe" : "java";
-        assertTrue(resolved.equals("jre" + java.io.File.separatorChar + "bin"
-                + java.io.File.separatorChar + (WINDOWS ? "javaw.exe" : "java"))
-                || resolved.equals(expectedFallback));
+        assertTrue(isAValidResolution(resolved),
+                "unexpected resolution: " + resolved);
+    }
+
+    /**
+     * Accepts every legitimate outcome of the fallback chain: ./jre relative to
+     * the working directory (present on dev machines), JAVA_HOME (set on CI by
+     * setup-java) or the bare PATH executable.
+     */
+    private static boolean isAValidResolution(String resolved) {
+        String javaw = WINDOWS ? "javaw.exe" : "java";
+        String sep = java.io.File.separator;
+        if (resolved.equals("jre" + sep + "bin" + sep + javaw)) {
+            return true;
+        }
+        String javaHomeEnv = System.getenv("JAVA_HOME");
+        if (javaHomeEnv != null && !javaHomeEnv.isEmpty()
+                && resolved.equals(javaHomeEnv + sep + "bin" + sep + javaw)) {
+            return true;
+        }
+        return resolved.equals(WINDOWS ? "java.exe" : "java");
     }
 
     @Test
