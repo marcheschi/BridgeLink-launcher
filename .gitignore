@@ -16,6 +16,10 @@ build/windows/app/
 build/windows/jre/
 build/windows/output/
 
+# Linux packages build outputs (deb/AppImage workdirs and artifacts)
+build/linux/work/
+build/linux/output/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

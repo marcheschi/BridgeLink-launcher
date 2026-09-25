@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="$SCRIPT_DIR/jre"
 LOCAL_SRC="/opt/BridgeLink-Launcher/jre"
-ZULU_URL="https://cdn.azul.com/zulu/bin/zulu17.56.15-ca-fx-jdk17.0.14-linux_x64.tar.gz"
+ZULU_URL="https://cdn.azul.com/zulu/bin/zulu17.66.19-ca-fx-jdk17.0.19-linux_x64.tar.gz"
 
 is_fx_jre() {
     [[ -x "$1/bin/java" ]] || return 1

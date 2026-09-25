@@ -9,6 +9,7 @@ import java.io.OutputStream;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.FileWriter;
+import java.net.URLDecoder;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -190,7 +191,7 @@ public class ProcessLauncher {
             }
             
             consoleCommand.add("-cp");
-            consoleCommand.add("lib/java-console.jar");
+            consoleCommand.add(resolveJavaConsoleJar());
             consoleCommand.add("com.innovarhealthcare.launcher.JavaConsoleDialog");
             
             ProcessBuilder consolePb = new ProcessBuilder(consoleCommand);
@@ -249,6 +250,34 @@ public class ProcessLauncher {
         log("⏰ Check the dock/taskbar now to see if the tooltip shows 'BridgeLink Administrator'");
     }
     
+    /**
+     * Resolves the Java console helper jar. The legacy relative path
+     * ("lib/java-console.jar") only worked when the process current directory
+     * matched the application directory; packaged layouts (.deb, AppImage,
+     * Windows installer) run from arbitrary working directories, so the path is
+     * resolved against the location of the launcher jar itself, with fallbacks
+     * for the flat unpacked layout used by the source tree.
+     */
+    private static String resolveJavaConsoleJar() {
+        // 1. Next to the launcher jar (packaged layouts: <app>/lib/<launcher>.jar)
+        try {
+            String jarPath = ProcessLauncher.class.getProtectionDomain().getCodeSource().getLocation().toURI().getPath();
+            File launcherJar = new File(URLDecoder.decode(jarPath, "UTF-8"));
+            File sibling = new File(launcherJar.getParentFile(), "java-console.jar");
+            if (sibling.isFile()) {
+                return sibling.getAbsolutePath();
+            }
+            File libSubdir = new File(launcherJar.getParentFile(), "lib/java-console.jar");
+            if (libSubdir.isFile()) {
+                return libSubdir.getAbsolutePath();
+            }
+        } catch (Exception ignored) {
+            // fall through to legacy relative path
+        }
+        // 2. Legacy relative path (source tree / current dir == app dir)
+        return "lib/java-console.jar";
+    }
+
     private String getProcessId(Process process) {
         try {
             // Try to get PID using reflection for Java 9+

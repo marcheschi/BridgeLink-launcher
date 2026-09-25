@@ -5,6 +5,10 @@ How to cut a new BridgeLink Launcher release. Following these steps produces:
 - `bridge-link-launcher-<version>.jar` — executable jar (attached manually)
 - `BridgeLinkLauncher-<version>-windows-x64-setup.exe` — Windows installer with an
   embedded Java 17 + JavaFX runtime (built and attached **automatically by CI**)
+- `bridgelink-launcher_<version>_amd64.deb` — Debian package with embedded
+  Java 17 + JavaFX (built and attached **automatically by CI**)
+- `BridgeLink-Launcher-<version>-x86_64.AppImage` — portable AppImage with
+  embedded Java 17 + JavaFX (built and attached **automatically by CI**)
 
 ## 1. Bump the version
 
@@ -58,9 +62,14 @@ gh release create v<version> \
     --notes "..."
 ```
 
-Creating the release automatically triggers the **Windows Release** workflow,
-which: installs Inno Setup, builds with Maven, provisions the Zulu FX 17
-runtime, compiles the installer and uploads it as a release asset.
+Creating the release automatically triggers **two** workflows:
+
+- **Windows Release** (`.github/workflows/windows-release.yml`): installs Inno
+  Setup, builds with Maven, provisions the Zulu FX 17 runtime, compiles the
+  installer and uploads it as a release asset.
+- **Linux Packages** (`.github/workflows/linux-packages.yml`): builds the `.deb`
+  (`build/linux/build-deb.sh`) and the AppImage (`build/linux/build-appimage.sh`),
+  both with the embedded runtime, and uploads them as release assets.
 
 ## 5. Attach the Linux/cross-platform assets
 
@@ -75,15 +84,18 @@ gh release upload v<version> \
 ## 6. Verify
 
 ```bash
-# Watch the workflow run
+# Watch the workflow runs
 gh run list --workflow=windows-release.yml --limit 1
-gh run watch <run-id>   # ~10 min: lzma2 compression of the 300 MB JRE is slow
+gh run list --workflow=linux-packages.yml --limit 1
+gh run watch <run-id>   # ~10 min each: the embedded JRE is big and slow to compress
 
-# All four assets must be listed
+# All six assets must be listed
 gh release view v<version> --json assets --jq '.assets[].name'
 
 # Expected:
 #   BridgeLinkLauncher-<version>-windows-x64-setup.exe   (built by CI)
+#   bridgelink-launcher_<version>_amd64.deb              (built by CI)
+#   BridgeLink-Launcher-<version>-x86_64.AppImage        (built by CI)
 #   bridge-link-launcher-<version>.jar                   (uploaded in step 5)
 #   bridgelink-starter.sh                                (uploaded in step 5)
 #   setup-jre.sh                                         (uploaded in step 5)

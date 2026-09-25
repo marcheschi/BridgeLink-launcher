@@ -3,14 +3,16 @@ An open source Admin Launcher for BridgeLink (and OSS Mirth Connect)
 
 ## Download
 
-Latest release: **[v1.5.0](https://github.com/marcheschi/BridgeLink-launcher/releases/tag/v1.5.0)**
+Latest release: **[v1.6.0](https://github.com/marcheschi/BridgeLink-launcher/releases/tag/v1.6.0)**
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows x64 | [BridgeLinkLauncher-1.5.0-windows-x64-setup.exe](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/BridgeLinkLauncher-1.5.0-windows-x64-setup.exe) | Installer with **embedded Java 17 + JavaFX** — no Java installation required |
-| Cross-platform | [bridge-link-launcher-1.5.0.jar](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/bridge-link-launcher-1.5.0.jar) | Executable jar, run with any JDK 17+: `java -jar bridge-link-launcher-1.5.0.jar` |
-| Linux | [bridgelink-starter.sh](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/bridgelink-starter.sh) | One-shot starter: runs the jar and auto-provisions the JavaFX JRE |
-| Linux | [setup-jre.sh](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.5.0/setup-jre.sh) | Provisions a Zulu FX 17 runtime into `./jre` (idempotent) |
+| Windows x64 | [BridgeLinkLauncher-1.6.0-windows-x64-setup.exe](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.6.0/BridgeLinkLauncher-1.6.0-windows-x64-setup.exe) | Installer with **embedded Java 17 + JavaFX** — no Java installation required |
+| Linux (Debian/Ubuntu) | [bridgelink-launcher_1.6.0_amd64.deb](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.6.0/bridgelink-launcher_1.6.0_amd64.deb) | .deb package with **embedded Java 17 + JavaFX** — no Java installation required |
+| Linux (any distro) | [BridgeLink-Launcher-1.6.0-x86_64.AppImage](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.6.0/BridgeLink-Launcher-1.6.0-x86_64.AppImage) | Portable AppImage with **embedded Java 17 + JavaFX** — `chmod +x` and run |
+| Cross-platform | [bridge-link-launcher-1.6.0.jar](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.6.0/bridge-link-launcher-1.6.0.jar) | Executable jar, run with any JDK 17+: `java -jar bridge-link-launcher-1.6.0.jar` |
+| Linux | [bridgelink-starter.sh](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.6.0/bridgelink-starter.sh) | One-shot starter: runs the jar and auto-provisions the JavaFX JRE |
+| Linux | [setup-jre.sh](https://github.com/marcheschi/BridgeLink-launcher/releases/download/v1.6.0/setup-jre.sh) | Provisions a Zulu FX 17 runtime into `./jre` (idempotent) |
 
 All downloads: [Releases page](https://github.com/marcheschi/BridgeLink-launcher/releases)
 
@@ -48,6 +50,25 @@ Notes:
   are kept when upgrading (only `cache\` is removed on uninstall).
 - Connections that use a **custom** Java home are unaffected; connections using "Bundled Java"
   will use the embedded runtime installed alongside the app.
+
+## Linux Packages (.deb and AppImage)
+
+Both Linux packages embed the **Zulu FX 17 runtime** (Java + JavaFX): no system Java is needed.
+
+**.deb** (`bridgelink-launcher_<version>_amd64.deb`, Debian/Ubuntu and derivatives):
+
+- Installs to `/opt/bridgelink-launcher` (jar, `lib/java-console.jar`, `jre/`)
+- `bridgelink-launcher` command in `/usr/bin`, desktop entry and hicolor icons
+- `sudo dpkg -i bridgelink-launcher_<version>_amd64.deb` or `sudo apt install ./bridgelink-launcher_<version>_amd64.deb`
+
+**AppImage** (`BridgeLink-Launcher-<version>-x86_64.AppImage`, any x86_64 distro):
+
+- Single portable file: `chmod +x` and run; ideal for distros without .deb support or no-root installs
+- Connection data persists in `~/.local/share/bridgelink-launcher` (the mount is read-only)
+
+Build them locally with `./build/linux/build-deb.sh` and `./build/linux/build-appimage.sh`
+(see [RELEASE.md](RELEASE.md)); CI builds and attaches both to every GitHub release
+(see `.github/workflows/linux-packages.yml`).
 
 ## MacOS Specific Instructions
 Because the application is not signed by Apple, you may get a security warning and have to manually override your security settings to grant an exception to the launcher.
