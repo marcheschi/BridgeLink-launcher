@@ -38,6 +38,9 @@ and compiles the installer with Inno Setup 6 (output in `build/windows/output/`)
 CI does the same automatically on every GitHub release (see `.github/workflows/windows-release.yml`):
 the installer is built on a Windows runner and attached to the release as an artifact.
 
+The complete release procedure (version bump, tag, GitHub release, CI Windows
+installer, asset upload and verification) is documented in [RELEASE.md](RELEASE.md).
+
 Notes:
 
 - The launcher prefers `javaw.exe` on Windows, so no extra console window appears.
